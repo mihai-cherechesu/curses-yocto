@@ -1,0 +1,172 @@
+Name: Mihai-Cristian Cherechesu
+Grupa: 344 C3
+-------------------------------------------------------------------------------
+
+
+CONTENTS OF THIS FILE
+---------------------
+
+ * Implementare
+ * Probleme cunoscute
+ * Feedback
+
+
+IMPLEMENTARE
+------------
+
+    Pentru usurinta, vom imparti aceasta sectiune in 2 subsectiuni:
+        (1) Rootfs build, layers, configuration files - Yocto side
+        (2) REST API si aplicatia GUI pe seriala - Application side
+
+
+    (1) Partile de build si de testare au fost sustinute de skel-ul care a fost
+    propus in tema. Nu s-a folosit bitbake manual pentru lansarea procesului
+    de build si pentru cleansstate, ci kas.yml, in care s-au facut adaugarile
+    necesare pentru a putea face deploy la aplicatie.
+
+    Aplicatia a fost scrisa complet in python3 (cu Flask), iar pentru aceasta a
+    fost nevoie de un fetch al layerelor din upstream de python3 care includ si
+    Flask.
+
+         * Repository upstream pentru layer-ul meta-python (inclus in kas.yml
+           alaturi de meta-oe):
+           http://git.openembedded.org/meta-openembedded/tree
+
+
+    Pentru configurarea rootfs-ului s-a creat un nou layer, meta-si, pus sub
+    directorul standard layers/. Mai jos poate fi urmarita structura layer-ului
+    meta-si.
+
+                .
+            ├── conf
+            │   └── layer.conf
+            ├── COPYING.MIT
+            ├── licenses
+            │   └── LICENSE
+            ├── README
+            ├── recipes-connectivity
+            │   └── avahi
+            ├── recipes-core
+            │   ├── base-files
+            │   ├── dotfiles
+            │   ├── dropbear
+            │   ├── images
+            │   ├── init-ifupdown
+            │   ├── sysvinit-inittab
+            │   └── yellow-submarine
+            └── recipes-example
+                └── example
+
+    Directorul de licences contine o licenta GNU 2.0, care a fost necesara la
+    adaugarea retetelor custom 'dotfiles', 'yellow-submarine'.
+
+    Serviciul de mDNS/Avahi a fost configurat cu FQDN-ul (tema2.local) pentru
+    target-ul nostru prin .bbappend care suprascrie fisierul de configurare al
+    daemonului - /etc/avahi-daemon.conf.
+
+    Hostname-ul e modificat prin punerea fisierului de hostname in /etc - vezi
+    .bbappend din base-files.
+
+    Pentru pornirea serviciilor dupa boot (componentele aplicatiei - GUI & REST API),
+    s-au instalat printr-o reteta custom, dotfiles generice pentru un shell de bash,
+    .bashrc & .profile. Bashrc porneste intai printr-un alt serviciu intermediar de
+    tip WSGI (gunicorn), serverul de Flask care asculta pe 5000, in mod daemon. Apoi
+    , se porneste si aplicatia GUI pentru ca aceasta va ramane in foreground si va
+    afisa la /dev/ttyAMA0 desenele realizate prin Curse. Profile a fost necesar pentru
+    executia .bashrc-ului (fiind /bin/sh default shell pe target)
+
+    Serverul de SSH este dropbear - ceva mai lightweight decat OpenSSH. A fost instalat prin
+    packagegroup-core-ssh-dropbear, iar asupra acestui serviciu s-a facut o modificare prin .bbappend.
+    Modificarea adusa acestuia este in fisierul propriu de configurare "/etc/default/dropbear", unde
+    s-a eliminat optiunea default rootless, "-w", care nu permite logarea pe account-ul de root.
+
+    Images contine un .bbappend care ne aduce la imaginea folosita ca parinte (core-image-base)
+    user-ul root configurat cu parola ceruta si ne instaleaza suplimentar cele 2 retete custom,
+    yellow-submarine si dotfiles.
+
+    IP-ul este inchiriat dinamic masinii qemuarm prin DHCP, lucru realizat prin inlocuirea la fetch
+    a fisierului /etc/network/interfaces, care default creeaza doar interfata de loopback.
+
+    Pentru ca aplicatia de GUI sa poata sa trimita pe consola seriala (ttyAMA0) caractere speciale,
+    culori, a fost nevoie de inlocuirea terminalului de tip vt102, pus default pe sistemul nostru
+    de tip init, cu un superset al acestuia, xterm-256color. Aceasta s-a realizat printr-un
+    install_append care face un search la linia serialei AMA0 si inlocuieste valorile specificate.
+
+    Dependintele aplicatiei si deployment-ul ei in rootfs au fost facute printr-o reteta custom.
+    Sursele aplicatiei vor fi explicate in subsectiunea urmatoare. Componenta GUI a avut nevoie de
+    python3-curses, iar componenta REST a avut nevoie de python3-flask, python3-gunicorn, retete
+    luate din upstream asa cum am mentionat mai sus, instalate si in reteta noastra datorita RDEPENDS.
+
+
+    (2) Aplicatia are urmatoarea structura de fisiere:
+
+                .
+            ├── app.py
+            ├── db.py
+            ├── LICENSE
+            ├── vincent_van_gogu.py
+            └── wsgi.py
+
+    app.py: serverul de Flask, inclusiv controllerele REST sunt situate aici. Pe langa aceasta, se
+    initializeaza si o baza de date in-memory (dict, liste) pentru a tine starea curenta a mapei noastre
+    (cu submarinul, pestii si artefactul).
+
+    db.py: metode pentru stocare in-memory a starii curente. Se face busy waiting si se asteapta starea
+    initiala (care contine doar coordonatele submarinului) de la componenta GUI (scop: eliminarea hardcodarii
+    coordonatelor, posibilitatea de a obtine dinamic coordonate in functie de terminalul de unde se ruleaza).
+    Exista si o metoda de flush_state(), care se apeleaza la fiecare schimbare a mapei (adaugare pesti, miscare
+    submarin, etc) si care da nastere unui fisier .json, stocat pe disc si identificat cu un numar de secventa
+    unic (crescator). Aceste fisiere de state sunt folosite in ritmul in care poate interfata GUI sa citeasca
+    (la cate FPS doreste ea). Aceasta componenta le va cauta si le va elimina dupa ce deseneaza mapa cu starea
+    citita. De asemenea s-au luat in considerare limitarile din tema (doar 5 pesti pe harta la un moment dat,
+    eliminandu-se mereu cel mai vechi, etc)
+
+    vincent_van_gogu.py: foloseste python curses pentru trimiterea catre seriala a desenelor. Se folosesc culori
+    din spatiul de 256 de culori si modelele obiectelor (submarin, peste, artefact) sunt reprezentate ca
+    liste de liste, acestea alcatuind un ASCII art. Aceasta componenta de GUI face busy waiting si citeste stari
+    constant din fisierele de tip .json. In cazul in care nu se gaseste o stare noua, acesta nu redeseneaza toata
+    mapa inca o data, pentru a micsora utilizarea CPU.
+
+    wsgi.py: Un entrypoint necesar serverului de Flask, pornit cu gunicorn.
+
+        * Green unicorn, worker model portat de la Ruby.
+          https://gunicorn.org/
+
+
+PROBLEME CUNOSCUTE
+------------------
+
+    (1) Fisierul de testare, test.sh, pus in arhiva .tar.gz, alaturi de binare, foloseste
+    FQDN-ul target-ului nostru, tema2.local, insa uneori serviciul de mDNS nu raspunde din motive
+    pe care nu am reusit sa le descopar. Din acest motiv am facut un patch script-ului de test.sh,
+    unde am adaugat la "curl" un "--retry 5", pentru a elimina aceasta problema cat timp se va
+    face testarea.
+
+    Serviciul de DNS este configurat corect si functioneaza, insa apar deseori resolution failed,
+    atat la ping, cat si la ssh, dar cu mai multe incercari se poate ajunge la un rezultat bun.
+
+        Log-uri din apelurile script-ului de testare, catre tema2.local:5000.
+
+        POST /api/fish/add '{"x": 15, "y": 13}'
+        POST /api/fish/add '{"x": 20, "y": 44}'
+        POST /api/fish/add '{"x": 45, "y": 25}'
+        Warning: Transient problem: timeout Will retry in 1 seconds. 5 retries left.
+        Warning: Transient problem: timeout Will retry in 2 seconds. 4 retries left.
+        Warning: Transient problem: timeout Will retry in 4 seconds. 3 retries left.
+        POST /api/fish/add '{"x": 60, "y": 32}'
+        POST /api/fish/add '{"x": 33, "y": 43}'
+        POST /api/fish/add '{"x": 38, "y": 23}'
+        POST /api/artifact/update '{"x": 70, "y": 24}'
+
+
+FEEDBACK
+--------
+
+    Pros:
+        (1) Tema interesanta, learning-curve destul de abrupt, good job!
+        (2) Un schelet care m-a ajutat foarte mult.
+
+    Cons:
+        (1) Partea de desenare GUI a fost interesanta de inteles, dar
+        putin obositoare, am avut foarte multe incercari de desenare proprie pana
+        am ajuns la solutia de luat ASCII art.

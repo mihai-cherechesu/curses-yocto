@@ -1,0 +1,39 @@
+header:
+  version: 8
+
+local_conf_header:
+  meta-silabs: |
+    DL_DIR = "/home/student/tmp/downloads"
+    SSTATE_DIR = "/home/student/sstate-cache"
+    INHERIT += "rm_work"
+
+machine: qemuarm
+distro: poky
+target:
+  - core-image-base
+
+repos:
+  meta-si:
+    path: './layers/meta-si'
+
+  meta-raspberrypi:
+    url: git://git.yoctoproject.org/meta-raspberrypi
+    path: layers/meta-raspberrypi
+    refspec: dunfell
+
+  poky:
+    url: git://git.yoctoproject.org/poky
+    path: layers/poky
+    refspec: dunfell
+    layers:
+      meta:
+      meta-poky:
+      meta-yocto-bsp:
+
+  meta-openembedded:
+    url: git://git.openembedded.org/meta-openembedded
+    path: layers/meta-openembedded
+    refspec: dunfell
+    layers:
+      meta-oe:
+      meta-python:

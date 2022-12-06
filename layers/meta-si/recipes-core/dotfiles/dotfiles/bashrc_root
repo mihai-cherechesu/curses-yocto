@@ -1,0 +1,7 @@
+cd /app
+
+gunicorn --bind 0.0.0.0:5000 --error-logfile /home/root/err.log wsgi:app --daemon
+echo "Starting the flask WSGI daemon..."
+sleep 5
+python3 /app/vincent_van_gogu.py
+
